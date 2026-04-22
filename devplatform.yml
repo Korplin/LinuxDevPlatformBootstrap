@@ -96,7 +96,6 @@
       - ca-certificates
       - apt-transport-https
       - lsb-release
-      - software-properties-common
 
     # ── KDE Plasma desktop packages ──────────────────────────────────────────
     kde_packages:
