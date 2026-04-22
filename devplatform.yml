@@ -269,8 +269,8 @@
 
     # ── Branch A: VirtualBox guest ────────────────────────────────────────────
     - name: "[gpu/vm] VirtualBox guest additions — apt packages not available on Debian 13"
-    ansible.builtin.debug:
-      msg:
+      ansible.builtin.debug:
+       msg:
         - "VirtualBox guest packages are not in Debian 13 repos."
         - "After reboot, install from ISO:"
         - "  VirtualBox menu → Devices → Insert Guest Additions CD Image"
