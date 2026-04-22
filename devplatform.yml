@@ -1,0 +1,873 @@
+---
+# =============================================================================
+# devplatform.yml — Declarative Linux Developer Platform
+# =============================================================================
+#
+# This is a SINGLE-FILE playbook by intentional design.
+# You can read the ENTIRE declared state of your system in one scroll.
+#
+# The limitation of this structure becomes obvious as it grows — that moment
+# of pain is the exact lesson that motivates Ansible Roles in Module 1.
+# We feel the problem before we solve it. That is how real learning works.
+#
+# Repository: https://github.com/Korplin/LinuxDevPlatformBootstrap
+# =============================================================================
+
+- name: devplatform | Provision Linux Developer Platform
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars:
+    # ── Primary desktop user ─────────────────────────────────────────────────
+    # Passed in from bootstrap.sh via -e dev_user=<name>
+    # Fallback: whoever invoked sudo, or prompt you to set it explicitly.
+    dev_user: "{{ dev_user | default(ansible_env.SUDO_USER) | default(ansible_user_id) }}"
+    dev_home: "/home/{{ dev_user }}"
+
+    # ── Debian codename (auto-detected) ──────────────────────────────────────
+    debian_codename: "{{ ansible_distribution_release }}"
+
+    # ── Node.js LTS major version ────────────────────────────────────────────
+    # Update this number to switch LTS streams in future.
+    node_major_version: "22"
+
+    # ── Core developer tools ─────────────────────────────────────────────────
+    # These are installed on every system, regardless of hardware or VM type.
+    core_packages:
+      # Build essentials
+      - build-essential
+      - make
+      - cmake
+      - pkg-config
+      # Shell and terminal
+      - zsh
+      - tmux
+      - screen
+      # File and text tools
+      - neovim
+      - vim
+      - nano
+      - jq
+      - tree
+      - ncdu
+      - unzip
+      - zip
+      - tar
+      - rsync
+      # Modern CLI replacements (this is what the docs don't show beginners)
+      - bat           # better cat with syntax highlighting
+      - eza           # better ls with icons and git integration
+      - fzf           # fuzzy finder — transforms how you navigate
+      - ripgrep       # faster grep, respects .gitignore
+      - direnv        # per-directory environment variables
+      - starship      # cross-shell prompt with git context
+      # Networking tools
+      - curl
+      - wget
+      - net-tools
+      - nmap
+      - dnsutils
+      - whois
+      - openssh-client
+      # System diagnostics
+      - htop
+      - btop
+      - lsof
+      - strace
+      - pciutils
+      - usbutils
+      - dmidecode
+      - inxi
+      # Git
+      - git
+      - git-lfs
+      - gitk
+      - git-gui
+      # Python (DevOps tooling runtime)
+      - python3
+      - python3-pip
+      - python3-venv
+      - python3-dev
+      - pipx
+      # Crypto and certificates
+      - gnupg
+      - gpg
+      - ca-certificates
+      - apt-transport-https
+      - lsb-release
+      - software-properties-common
+
+    # ── KDE Plasma desktop packages ──────────────────────────────────────────
+    kde_packages:
+      - kde-full          # full KDE experience — students see what Linux can be
+      - sddm              # display manager (KDE's native)
+      - yakuake           # drop-down terminal (F12 key — show this to students)
+      - filelight         # disk usage visualiser (very visual, great for demos)
+      - partitionmanager  # KDE Partition Manager
+      - ksshaskpass       # graphical SSH key passphrase dialog
+
+    # ── KVM/libvirt virtualisation stack ─────────────────────────────────────
+    kvm_packages:
+      - qemu-kvm
+      - qemu-system-x86
+      - libvirt-daemon-system
+      - libvirt-clients
+      - virt-manager       # graphical VM manager
+      - virt-viewer        # SPICE/VNC viewer for VMs
+      - virtinst           # virt-install CLI tool
+      - bridge-utils       # network bridging for VMs
+      - cpu-checker        # kvm-ok command — verify KVM support
+      - ovmf               # UEFI firmware for VMs
+      - swtpm              # software TPM for VMs
+
+  # ── Pre-tasks: these run BEFORE the main task list ──────────────────────────
+  pre_tasks:
+
+    # IMPORTANT LESSON: We configure apt sources FIRST because every subsequent
+    # task depends on having access to non-free packages. Order matters here.
+
+    - name: "[repos] Enable main, contrib, non-free, and non-free-firmware"
+      ansible.builtin.copy:
+        # non-free-firmware is a separate component introduced in Debian 12.
+        # Without it: no NVIDIA/AMD/WiFi firmware. Students will hit this wall
+        # immediately on bare metal without this line.
+        content: |
+          # devplatform managed — do not edit manually, changes will be overwritten
+          deb https://deb.debian.org/debian/ {{ debian_codename }} main contrib non-free non-free-firmware
+          deb https://security.debian.org/debian-security {{ debian_codename }}-security main contrib non-free non-free-firmware
+          deb https://deb.debian.org/debian/ {{ debian_codename }}-updates main contrib non-free non-free-firmware
+        dest: /etc/apt/sources.list
+        backup: true
+        mode: '0644'
+      register: repos_updated
+
+    - name: "[repos] Refresh apt cache after repo changes"
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: "[update] Upgrade all existing packages to latest"
+      ansible.builtin.apt:
+        upgrade: dist
+        update_cache: false
+      # This ensures we start from a fully patched baseline.
+      # Running this on an already-upgraded system: no-op (idempotent).
+
+  tasks:
+
+    # ==========================================================================
+    # SECTION 1 — ENVIRONMENT DETECTION
+    # Ansible's gather_facts gives us OS, CPU, memory, etc.
+    # For GPU and virtualisation, we need to query the hardware directly.
+    # ==========================================================================
+
+    - name: "[detect] Query PCI devices"
+      ansible.builtin.shell:
+        cmd: lspci -nn
+      register: lspci_output
+      changed_when: false
+
+    - name: "[detect] Detect virtualisation type"
+      # systemd-detect-virt returns: oracle, kvm, vmware, none, etc.
+      # Exit code 1 = bare metal (not an error — just how the tool works)
+      ansible.builtin.command:
+        cmd: systemd-detect-virt
+      register: virt_detect
+      changed_when: false
+      failed_when: false
+
+    - name: "[detect] Set environment facts for conditional tasks"
+      ansible.builtin.set_fact:
+        # Virtualisation detection
+        is_virtualbox: "{{ virt_detect.stdout == 'oracle' }}"
+        is_kvm_guest:  "{{ virt_detect.stdout in ['kvm', 'qemu'] }}"
+        is_vmware:     "{{ virt_detect.stdout == 'vmware' }}"
+        is_bare_metal: "{{ virt_detect.stdout == 'none' }}"
+        # GPU vendor detection — checked against lspci output
+        has_nvidia:    "{{ 'NVIDIA' in lspci_output.stdout | upper }}"
+        has_amd:       "{{ ('AMD' in lspci_output.stdout | upper) or ('ATI' in lspci_output.stdout | upper) }}"
+        has_intel_gpu: "{{ 'Intel' in lspci_output.stdout and ('VGA' in lspci_output.stdout or 'Display' in lspci_output.stdout) }}"
+
+    - name: "[detect] Show detected environment — read this carefully"
+      ansible.builtin.debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Environment : {{ virt_detect.stdout | default('bare metal') }}"
+          - "  Bare metal  : {{ is_bare_metal }}"
+          - "  VirtualBox  : {{ is_virtualbox }}"
+          - "  KVM/QEMU    : {{ is_kvm_guest }}"
+          - "  NVIDIA GPU  : {{ has_nvidia }}"
+          - "  AMD GPU     : {{ has_amd }}"
+          - "  Intel GPU   : {{ has_intel_gpu }}"
+          - "  Dev user    : {{ dev_user }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    # ==========================================================================
+    # SECTION 2 — CORE PACKAGES
+    # ==========================================================================
+
+    - name: "[core] Install core developer tools"
+      ansible.builtin.apt:
+        name: "{{ core_packages }}"
+        state: present
+        update_cache: false
+
+    # ==========================================================================
+    # SECTION 3 — KERNEL HEADERS AND DKMS
+    # Required BEFORE installing any driver that compiles kernel modules.
+    # DKMS (Dynamic Kernel Module Support) recompiles modules automatically
+    # when the kernel is upgraded — critical for NVIDIA, VirtualBox, etc.
+    # ==========================================================================
+
+    - name: "[kernel] Install kernel headers for running kernel"
+      ansible.builtin.apt:
+        name:
+          - "linux-headers-{{ ansible_kernel }}"
+          - linux-headers-amd64    # meta-package: tracks future kernels
+          - dkms
+        state: present
+
+    # ==========================================================================
+    # SECTION 4 — HARDWARE FIRMWARE
+    # WiFi, Bluetooth, and peripheral firmware.
+    # These are installed best-effort — not all packages exist on all hardware.
+    # The ignore_errors is intentional and documented, not lazy.
+    # ==========================================================================
+
+    - name: "[firmware] Install core Linux firmware packages"
+      ansible.builtin.apt:
+        name:
+          - firmware-linux             # meta: installs free + nonfree firmware
+          - firmware-linux-free
+          - firmware-linux-nonfree
+        state: present
+
+    - name: "[firmware] Install wireless hardware firmware (best-effort per device)"
+      # Each item is attempted independently. Missing packages are not an error —
+      # your hardware simply does not need that firmware.
+      ansible.builtin.apt:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - firmware-iwlwifi       # Intel WiFi (most common on laptops)
+        - firmware-realtek       # Realtek (WiFi + Ethernet)
+        - firmware-atheros       # Qualcomm/Atheros WiFi
+        - firmware-ralink        # Ralink/MediaTek WiFi
+        - firmware-brcm80211     # Broadcom WiFi (MacBooks, some laptops)
+        - firmware-mediatek      # MediaTek
+        - firmware-misc-nonfree  # catch-all for other hardware
+        - wpasupplicant          # WPA/WPA2 supplicant (WiFi auth daemon)
+        - network-manager        # NetworkManager (KDE uses this)
+        - plasma-nm              # KDE NetworkManager integration panel
+      ignore_errors: true
+
+    # ==========================================================================
+    # SECTION 5 — GPU DRIVERS
+    # This section branches based on detected hardware.
+    # VirtualBox and KVM get guest integration tools.
+    # Real hardware gets the appropriate GPU driver stack.
+    # ==========================================================================
+
+    # ── Branch A: VirtualBox guest ────────────────────────────────────────────
+    - name: "[gpu/vm] Install VirtualBox guest additions and integration tools"
+      ansible.builtin.apt:
+        name:
+          - virtualbox-guest-x11     # 3D acceleration inside VirtualBox
+          - virtualbox-guest-utils   # shared clipboard, drag & drop, etc.
+          - virtualbox-guest-dkms    # DKMS-managed kernel module
+        state: present
+      when: is_virtualbox
+      # NOTE: There can be a version mismatch between these apt packages and
+      # your VirtualBox host version. If display issues occur after reboot,
+      # install Guest Additions from the VirtualBox Devices menu instead.
+
+    # ── Branch B: KVM/QEMU guest ──────────────────────────────────────────────
+    - name: "[gpu/vm] Install KVM/QEMU guest tools and display drivers"
+      ansible.builtin.apt:
+        name:
+          - spice-vdagent       # clipboard sharing, auto-resolution with SPICE
+          - qemu-guest-agent    # host-to-guest communication channel
+          - xserver-xorg-video-qxl  # QXL display driver for SPICE
+        state: present
+      when: is_kvm_guest
+
+    # ── Branch C: NVIDIA on bare metal ───────────────────────────────────────
+    # nvidia-detect is a Debian tool that reads your GPU's PCI ID and tells you
+    # exactly which driver package to install. This handles legacy cards
+    # (like GTX 560 Ti which needs nvidia-legacy-390xx-driver) automatically.
+    - name: "[gpu/nvidia] Install nvidia-detect utility"
+      ansible.builtin.apt:
+        name: nvidia-detect
+        state: present
+      when: has_nvidia and is_bare_metal
+
+    - name: "[gpu/nvidia] Run nvidia-detect to find recommended driver"
+      ansible.builtin.command:
+        cmd: nvidia-detect
+      register: nvidia_detect_output
+      changed_when: false
+      failed_when: false
+      when: has_nvidia and is_bare_metal
+
+    - name: "[gpu/nvidia] Show nvidia-detect recommendation"
+      ansible.builtin.debug:
+        msg: "{{ nvidia_detect_output.stdout_lines | default(['nvidia-detect not run']) }}"
+      when: has_nvidia and is_bare_metal
+
+    - name: "[gpu/nvidia] Extract driver package name from nvidia-detect output"
+      # nvidia-detect outputs the package name indented on its own line.
+      # We select lines starting with whitespace followed by 'nvidia' and take
+      # the first match. Default to nvidia-driver if parsing fails.
+      ansible.builtin.set_fact:
+        nvidia_driver_pkg: >-
+          {{ (nvidia_detect_output.stdout_lines | default([]))
+             | select('match', '^\\s+nvidia')
+             | map('trim')
+             | list
+             | first
+             | default('nvidia-driver') }}
+      when: has_nvidia and is_bare_metal
+
+    - name: "[gpu/nvidia] Install NVIDIA driver: {{ nvidia_driver_pkg | default('detection pending') }}"
+      ansible.builtin.apt:
+        name: "{{ nvidia_driver_pkg }}"
+        state: present
+      when:
+        - has_nvidia
+        - is_bare_metal
+        - nvidia_driver_pkg is defined
+
+    # ── Branch D: AMD GPU on bare metal ──────────────────────────────────────
+    - name: "[gpu/amd] Install AMD GPU firmware and open-source driver stack"
+      ansible.builtin.apt:
+        name:
+          - firmware-amd-graphics    # GPU microcode and firmware
+          - xserver-xorg-video-amdgpu
+          - libgl1-mesa-dri          # OpenGL via Mesa
+          - mesa-vulkan-drivers      # Vulkan for gaming and modern workloads
+          - vulkan-tools             # vulkaninfo — useful for verification
+        state: present
+      when: has_amd and is_bare_metal
+
+    # ── Branch E: Intel integrated GPU ───────────────────────────────────────
+    - name: "[gpu/intel] Install Intel GPU drivers and hardware video acceleration"
+      ansible.builtin.apt:
+        name:
+          - xserver-xorg-video-intel
+          - intel-media-va-driver    # VA-API hardware video decode
+          - i965-va-driver           # older Intel hardware decode support
+          - libgl1-mesa-dri
+          - mesa-vulkan-drivers
+        state: present
+      when: has_intel_gpu and is_bare_metal
+      ignore_errors: true  # older Intel driver package may not exist on all Trixie configs
+
+    # ==========================================================================
+    # SECTION 6 — KDE PLASMA DESKTOP
+    # This is a large download (600MB+). This is normal and expected.
+    # The kde-full meta-package installs the complete KDE experience.
+    # ==========================================================================
+
+    - name: "[kde] Install KDE Plasma full desktop environment"
+      ansible.builtin.apt:
+        name: "{{ kde_packages }}"
+        state: present
+      # Grab a coffee. This is the biggest step.
+
+    - name: "[kde] Set SDDM as the default display manager"
+      ansible.builtin.copy:
+        content: "/usr/sbin/sddm\n"
+        dest: /etc/X11/default-display-manager
+        mode: '0644'
+
+    - name: "[kde] Enable SDDM service to start on boot"
+      ansible.builtin.systemd:
+        name: sddm
+        enabled: true
+        daemon_reload: true
+      # SDDM will not start now — we are in text/multi-user mode.
+      # It will start after the reboot at the end of this playbook.
+
+    - name: "[kde] Set graphical.target as default boot target"
+      ansible.builtin.command:
+        cmd: systemctl set-default graphical.target
+      changed_when: false
+
+    # ==========================================================================
+    # SECTION 7 — KVM VIRTUALISATION TOOLS
+    # Only installed on bare metal or inside a KVM guest (nested virt).
+    # Skipped in VirtualBox — nested virtualisation in VirtualBox is unreliable.
+    # ==========================================================================
+
+    - name: "[kvm] Install KVM/libvirt virtualisation stack"
+      ansible.builtin.apt:
+        name: "{{ kvm_packages }}"
+        state: present
+      when: is_bare_metal or is_kvm_guest
+
+    - name: "[kvm] Enable and start libvirtd"
+      ansible.builtin.systemd:
+        name: libvirtd
+        enabled: true
+        state: started
+      when: is_bare_metal or is_kvm_guest
+
+    - name: "[kvm] Add {{ dev_user }} to libvirt and kvm groups"
+      ansible.builtin.user:
+        name: "{{ dev_user }}"
+        groups:
+          - libvirt
+          - kvm
+        append: true
+      when: is_bare_metal or is_kvm_guest
+      # Group changes take effect on next login.
+
+    # ==========================================================================
+    # SECTION 8 — DOCKER
+    # Using the official Docker apt repository, not the Debian-provided package.
+    # Reason: Docker in Debian repos lags behind by months.
+    # The /etc/apt/keyrings/ pattern is the modern, correct way to add
+    # third-party apt keys — not the deprecated apt-key approach.
+    # ==========================================================================
+
+    - name: "[docker] Create /etc/apt/keyrings directory"
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: "[docker] Add Docker GPG key"
+      ansible.builtin.shell:
+        cmd: |
+          curl -fsSL https://download.docker.com/linux/debian/gpg \
+            | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+          chmod a+r /etc/apt/keyrings/docker.gpg
+        creates: /etc/apt/keyrings/docker.gpg
+
+    - name: "[docker] Add Docker apt repository"
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg]
+          https://download.docker.com/linux/debian
+          {{ debian_codename }} stable
+        filename: docker
+        state: present
+
+    - name: "[docker] Install Docker Engine and plugins"
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin   # buildx: multi-platform builds
+          - docker-compose-plugin  # docker compose v2 (not the old python version)
+        state: present
+        update_cache: true
+
+    - name: "[docker] Enable and start Docker daemon"
+      ansible.builtin.systemd:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: "[docker] Add {{ dev_user }} to docker group"
+      ansible.builtin.user:
+        name: "{{ dev_user }}"
+        groups: docker
+        append: true
+      # Without this, every docker command needs sudo. With this, it does not.
+      # Security note: docker group = effective root. Worth explaining to students.
+
+    # ==========================================================================
+    # SECTION 9 — GIT TOOLING
+    # git itself is in core_packages above.
+    # Here we add the tooling that turns git from a command into an experience.
+    # ==========================================================================
+
+    - name: "[git] Add GitHub CLI GPG key"
+      ansible.builtin.shell:
+        cmd: |
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+            | gpg --dearmor -o /etc/apt/keyrings/githubcli.gpg
+          chmod a+r /etc/apt/keyrings/githubcli.gpg
+        creates: /etc/apt/keyrings/githubcli.gpg
+
+    - name: "[git] Add GitHub CLI apt repository"
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch=amd64 signed-by=/etc/apt/keyrings/githubcli.gpg]
+          https://cli.github.com/packages
+          stable main
+        filename: github-cli
+        state: present
+
+    - name: "[git] Install GitHub CLI (gh)"
+      ansible.builtin.apt:
+        name: gh
+        state: present
+        update_cache: true
+
+    - name: "[git] Install git-delta — better diffs"
+      ansible.builtin.apt:
+        name: git-delta
+        state: present
+      # git-delta replaces the default diff output with syntax-highlighted,
+      # side-by-side diffs. Configure as pager in ~/.gitconfig.
+
+    - name: "[git] Install lazygit — TUI git client"
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          VERSION=$(curl -sL "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" \
+            | jq -r ".tag_name" | sed 's/v//')
+          curl -sL \
+            "https://github.com/jesseduffield/lazygit/releases/download/v${VERSION}/lazygit_${VERSION}_Linux_x86_64.tar.gz" \
+            | tar -xzf - -C /usr/local/bin lazygit
+          chmod +x /usr/local/bin/lazygit
+        creates: /usr/local/bin/lazygit
+
+    # ==========================================================================
+    # SECTION 10 — NODE.JS
+    # Using NodeSource for a current LTS release.
+    # Reason: Debian's nodejs package is often 2-3 major versions behind.
+    # ==========================================================================
+
+    - name: "[node] Add NodeSource GPG key"
+      ansible.builtin.shell:
+        cmd: |
+          curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+            | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+          chmod a+r /etc/apt/keyrings/nodesource.gpg
+        creates: /etc/apt/keyrings/nodesource.gpg
+
+    - name: "[node] Add NodeSource repository for Node {{ node_major_version }} LTS"
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [signed-by=/etc/apt/keyrings/nodesource.gpg]
+          https://deb.nodesource.com/node_{{ node_major_version }}.x
+          nodistro main
+        filename: nodesource
+        state: present
+
+    - name: "[node] Install Node.js"
+      ansible.builtin.apt:
+        name: nodejs
+        state: present
+        update_cache: true
+
+    - name: "[node] Install global npm tooling (yarn, pnpm)"
+      ansible.builtin.shell:
+        cmd: "npm install -g {{ item }}"
+        creates: "/usr/lib/node_modules/{{ item }}"
+      loop:
+        - yarn
+        - pnpm
+
+    # ==========================================================================
+    # SECTION 11 — PYTHON TOOLING
+    # pipx installs Python tools in isolated virtual environments.
+    # This avoids the PEP 668 conflict with Debian's managed Python packages.
+    # ==========================================================================
+
+    - name: "[python] Install Python DevOps tools via pipx (as {{ dev_user }})"
+      ansible.builtin.shell:
+        cmd: |
+          su - {{ dev_user }} -c '
+            pipx install {{ item }} 2>/dev/null \
+              || pipx upgrade {{ item }} 2>/dev/null \
+              || echo "{{ item }}: already at latest"
+          '
+      loop:
+        - ansible-lint    # lint your Ansible playbooks
+        - pre-commit      # git hook framework — used heavily in Module 3
+        - httpie          # better HTTP client than curl for API testing
+      changed_when: false
+
+    # ==========================================================================
+    # SECTION 12 — KUBERNETES TOOLING
+    # kubectl, Helm, and k9s. The cluster comes in Module 5 —
+    # but the tools should be available from day one.
+    # ==========================================================================
+
+    - name: "[k8s] Add Kubernetes GPG key"
+      ansible.builtin.shell:
+        cmd: |
+          curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key \
+            | gpg --dearmor -o /etc/apt/keyrings/kubernetes.gpg
+          chmod a+r /etc/apt/keyrings/kubernetes.gpg
+        creates: /etc/apt/keyrings/kubernetes.gpg
+
+    - name: "[k8s] Add Kubernetes apt repository"
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [signed-by=/etc/apt/keyrings/kubernetes.gpg]
+          https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /
+        filename: kubernetes
+        state: present
+
+    - name: "[k8s] Install kubectl"
+      ansible.builtin.apt:
+        name: kubectl
+        state: present
+        update_cache: true
+
+    - name: "[k8s] Install Helm (Kubernetes package manager)"
+      ansible.builtin.shell:
+        cmd: curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        creates: /usr/local/bin/helm
+      environment:
+        HELM_INSTALL_DIR: /usr/local/bin
+
+    - name: "[k8s] Install k9s (Kubernetes TUI)"
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          VERSION=$(curl -sL "https://api.github.com/repos/derailed/k9s/releases/latest" \
+            | jq -r ".tag_name")
+          curl -sL \
+            "https://github.com/derailed/k9s/releases/download/${VERSION}/k9s_Linux_amd64.tar.gz" \
+            | tar -xzf - -C /usr/local/bin k9s
+          chmod +x /usr/local/bin/k9s
+        creates: /usr/local/bin/k9s
+
+    # ==========================================================================
+    # SECTION 13 — FLATPAK
+    # Flatpak provides sandboxed, distro-independent application packaging.
+    # The Discover backend integrates Flathub into KDE's software centre.
+    # ==========================================================================
+
+    - name: "[flatpak] Install Flatpak and KDE Discover backend"
+      ansible.builtin.apt:
+        name:
+          - flatpak
+          - plasma-discover-backend-flatpak
+        state: present
+
+    - name: "[flatpak] Add Flathub remote repository"
+      ansible.builtin.shell:
+        cmd: flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+      changed_when: false
+
+    # ==========================================================================
+    # SECTION 14 — BRAVE BROWSER
+    # Installed as .deb from official Brave apt repository.
+    # Not Flatpak — apt integration means it receives updates via apt upgrade.
+    # ==========================================================================
+
+    - name: "[brave] Add Brave Browser GPG key"
+      ansible.builtin.shell:
+        cmd: |
+          curl -fsSL \
+            https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg \
+            -o /etc/apt/keyrings/brave-browser-archive-keyring.gpg
+          chmod a+r /etc/apt/keyrings/brave-browser-archive-keyring.gpg
+        creates: /etc/apt/keyrings/brave-browser-archive-keyring.gpg
+
+    - name: "[brave] Add Brave Browser apt repository"
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [signed-by=/etc/apt/keyrings/brave-browser-archive-keyring.gpg arch=amd64]
+          https://brave-browser-apt-release.s3.brave.com/
+          stable main
+        filename: brave-browser
+        state: present
+
+    - name: "[brave] Install Brave Browser"
+      ansible.builtin.apt:
+        name: brave-browser
+        state: present
+        update_cache: true
+
+    # ==========================================================================
+    # SECTION 15 — VISUAL STUDIO CODE
+    # Official Microsoft apt repository. The 'code' package name is stable.
+    # ==========================================================================
+
+    - name: "[vscode] Add Microsoft GPG key"
+      ansible.builtin.shell:
+        cmd: |
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+            | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg
+          chmod a+r /etc/apt/keyrings/microsoft.gpg
+        creates: /etc/apt/keyrings/microsoft.gpg
+
+    - name: "[vscode] Add VS Code apt repository"
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg]
+          https://packages.microsoft.com/repos/code
+          stable main
+        filename: vscode
+        state: present
+
+    - name: "[vscode] Install Visual Studio Code"
+      ansible.builtin.apt:
+        name: code
+        state: present
+        update_cache: true
+
+    # ==========================================================================
+    # SECTION 16 — CURSOR IDE
+    # Cursor does not provide an apt repository.
+    # We download the .deb directly from their download endpoint.
+    # The URL fetches the latest stable release automatically.
+    # ==========================================================================
+
+    - name: "[cursor] Check if Cursor is already installed"
+      ansible.builtin.stat:
+        path: /usr/bin/cursor
+      register: cursor_stat
+
+    - name: "[cursor] Download Cursor IDE .deb"
+      ansible.builtin.get_url:
+        url: "https://downloader.cursor.sh/linux/nspkg/x64"
+        dest: /tmp/cursor.deb
+        mode: '0644'
+        timeout: 120
+      register: cursor_download
+      failed_when: false   # If Cursor changes their URL, we fail gracefully
+      when: not cursor_stat.stat.exists
+
+    - name: "[cursor] Install Cursor IDE from downloaded .deb"
+      ansible.builtin.apt:
+        deb: /tmp/cursor.deb
+        state: present
+      when:
+        - not cursor_stat.stat.exists
+        - cursor_download is not failed
+        - cursor_download.dest is defined
+
+    - name: "[cursor] Warn if Cursor download failed"
+      ansible.builtin.debug:
+        msg: |
+          ⚠ Cursor IDE download failed. The URL may have changed.
+          Install manually from: https://www.cursor.com/downloads
+      when:
+        - not cursor_stat.stat.exists
+        - cursor_download is failed
+
+    - name: "[cursor] Clean up downloaded .deb"
+      ansible.builtin.file:
+        path: /tmp/cursor.deb
+        state: absent
+
+    # ==========================================================================
+    # SECTION 17 — SHELL ENVIRONMENT
+    # zsh + starship prompt + sensible aliases.
+    # This is the environment dev_user will see every time they open a terminal.
+    # ==========================================================================
+
+    - name: "[shell] Set zsh as default shell for {{ dev_user }}"
+      ansible.builtin.user:
+        name: "{{ dev_user }}"
+        shell: /usr/bin/zsh
+
+    - name: "[shell] Ensure .config directory exists for {{ dev_user }}"
+      ansible.builtin.file:
+        path: "{{ dev_home }}/.config"
+        state: directory
+        owner: "{{ dev_user }}"
+        group: "{{ dev_user }}"
+        mode: '0755'
+
+    - name: "[shell] Configure .zshrc for {{ dev_user }}"
+      ansible.builtin.blockinfile:
+        path: "{{ dev_home }}/.zshrc"
+        create: true
+        owner: "{{ dev_user }}"
+        group: "{{ dev_user }}"
+        mode: '0644'
+        marker: "# {mark} DEVPLATFORM MANAGED — do not edit this block manually"
+        block: |
+          # ── Prompt ─────────────────────────────────────────────────────────
+          eval "$(starship init zsh)"
+
+          # ── direnv: per-directory environment variables ────────────────────
+          eval "$(direnv hook zsh)"
+
+          # ── fzf: fuzzy finder key bindings ─────────────────────────────────
+          source /usr/share/doc/fzf/examples/key-bindings.zsh 2>/dev/null || true
+          source /usr/share/doc/fzf/examples/completion.zsh   2>/dev/null || true
+
+          # ── Modern CLI replacements ─────────────────────────────────────────
+          alias ls='eza --icons'
+          alias ll='eza --icons -la'
+          alias lt='eza --icons --tree --level=2'
+          alias cat='bat --style=auto'
+
+          # ── Git shortcuts ───────────────────────────────────────────────────
+          alias gs='git status'
+          alias gc='git commit'
+          alias gp='git push'
+          alias gl='git log --oneline --graph --decorate --all'
+          alias lg='lazygit'
+
+          # ── Kubernetes shortcuts ────────────────────────────────────────────
+          alias k='kubectl'
+          alias kgp='kubectl get pods'
+          alias kgs='kubectl get services'
+
+          # ── pipx PATH ──────────────────────────────────────────────────────
+          export PATH="$HOME/.local/bin:$PATH"
+
+    # ==========================================================================
+    # SECTION 18 — NERD FONTS
+    # Required for starship prompt icons, eza icons, and lazygit symbols
+    # to render correctly in the terminal. Without this, you see squares.
+    # ==========================================================================
+
+    - name: "[fonts] Create Nerd Fonts directory"
+      ansible.builtin.file:
+        path: /usr/local/share/fonts/nerd-fonts
+        state: directory
+        mode: '0755'
+
+    - name: "[fonts] Install JetBrainsMono Nerd Font"
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          VERSION=$(curl -sL "https://api.github.com/repos/ryanoasis/nerd-fonts/releases/latest" \
+            | jq -r ".tag_name")
+          curl -sL \
+            "https://github.com/ryanoasis/nerd-fonts/releases/download/${VERSION}/JetBrainsMono.tar.xz" \
+            | tar -xJf - -C /usr/local/share/fonts/nerd-fonts
+          fc-cache -f
+        creates: /usr/local/share/fonts/nerd-fonts/JetBrainsMonoNerdFont-Regular.ttf
+
+    # ==========================================================================
+    # SECTION 19 — YQ (YAML PROCESSOR)
+    # jq for YAML. Not in Debian repos at a useful version — install binary.
+    # ==========================================================================
+
+    - name: "[tools] Install yq YAML processor"
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          VERSION=$(curl -sL "https://api.github.com/repos/mikefarah/yq/releases/latest" \
+            | jq -r ".tag_name")
+          curl -sL \
+            "https://github.com/mikefarah/yq/releases/download/${VERSION}/yq_linux_amd64" \
+            -o /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
+        creates: /usr/local/bin/yq
+
+    # ==========================================================================
+    # SECTION 20 — FINAL SUMMARY
+    # ==========================================================================
+
+    - name: "[done] Provisioning complete"
+      ansible.builtin.debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  devplatform provisioning complete"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Environment : {{ virt_detect.stdout | default('bare metal') }}"
+          - "  Dev user    : {{ dev_user }}"
+          - "  GPU         : NVIDIA={{ has_nvidia }}  AMD={{ has_amd }}  Intel={{ has_intel_gpu }}"
+          - ""
+          - "  ➜  sudo reboot"
+          - ""
+          - "  After reboot you will land in KDE Plasma."
+          - "  Set JetBrainsMono Nerd Font in Konsole settings."
+          - "  Run this playbook again at any time — it is idempotent."
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
