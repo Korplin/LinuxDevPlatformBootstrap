@@ -1,4 +1,4 @@
-wget -O bootstrap.sh https://raw.githubusercontent.com/Korplin/LinuxDevPlatformBootstrap/main/bootstrap.sh \ && sudo bash bootstrap.sh
+wget -O bootstrap.sh https://raw.githubusercontent.com/Korplin/LinuxDevPlatformBootstrap/main/bootstrap.sh && sudo bash bootstrap.sh
 
 # GPT
 
