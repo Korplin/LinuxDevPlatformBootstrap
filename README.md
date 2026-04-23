@@ -8,7 +8,9 @@ After reboot, set JetBrainsMono Nerd Font in Konsole settings — otherwise the 
 # Delete later
 
 sudo rm -f /etc/apt/keyrings/kubernetes.gpg
+
 sudo rm -f /etc/apt/sources.list.d/kubernetes.list
+
 sudo apt-get update
 
 
