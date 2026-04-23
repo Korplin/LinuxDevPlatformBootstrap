@@ -361,7 +361,7 @@
       ansible.builtin.shell:
         cmd: /mnt/vbox-ga/VBoxLinuxAdditions.run --nox11
       register: vbox_ga_result
-      failed_when: vbox_ga_result.rc not in [0, 1]
+      failed_when: vbox_ga_result.rc not in [0, 1, 2]
       when:
         - is_virtualbox
         - not vbox_ga_installed.stat.exists
