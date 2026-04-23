@@ -674,7 +674,19 @@
     # ==========================================================================
     # SECTION 15 — VISUAL STUDIO CODE
     # Official Microsoft apt repository. The 'code' package name is stable.
+    # VS Code's post-install script sometimes writes its own source entry to
+    # /usr/share/keyrings/ — which conflicts with our /etc/apt/keyrings/ path.
+    # We remove any conflicting entry before adding ours.
     # ==========================================================================
+
+    - name: "[vscode] Remove conflicting Microsoft keyring if present"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /usr/share/keyrings/microsoft.gpg
+        - /etc/apt/sources.list.d/vscode.list
+      # Idempotent — absent on a clean system is a no-op.
 
     - name: "[vscode] Add Microsoft GPG key"
       ansible.builtin.shell:
@@ -703,7 +715,7 @@
     # SECTION 16 — CURSOR IDE
     # Cursor does not provide an apt repository.
     # downloader.cursor.sh uses redirects that Ansible's get_url module does not
-    # follow correctly. curl handles this natively.
+    # follow correctly. curl handles this natively with -fsSL.
     # creates: guard makes this idempotent — skipped if already installed.
     # ==========================================================================
 
@@ -718,7 +730,7 @@
         creates: /usr/bin/cursor
       # WHY CURL NOT get_url: downloader.cursor.sh redirects through multiple
       # hops. Ansible's get_url module does not follow all redirect types.
-      # curl -fsSL follows all redirects silently and fails loudly on errors.
+      # curl -fsSL follows all redirects and fails loudly on any error.
 
     # ==========================================================================
     # SECTION 17 — SHELL ENVIRONMENT
