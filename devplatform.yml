@@ -99,7 +99,7 @@
 
     # ── KDE Plasma desktop packages ──────────────────────────────────────────
     kde_packages:
-      - kde-full          # full KDE experience — students see what Linux can be
+      - kde-standard      # full KDE experience — students see what Linux can be
       - sddm              # display manager (KDE's native)
       - yakuake           # drop-down terminal (F12 key — show this to students)
       - filelight         # disk usage visualiser (very visual, great for demos)
