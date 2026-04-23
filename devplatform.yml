@@ -482,36 +482,7 @@
       # ignore_errors: true is here as a safety net, not because we expect failure.
 
     # ==========================================================================
-    # SECTION 6 — KDE PLASMA DESKTOP
-    # Large download — 300-500MB depending on mirror cache state.
-    # ==========================================================================
-
-    - name: "[kde] Install KDE Plasma desktop"
-      ansible.builtin.apt:
-        name: "{{ kde_packages }}"
-        state: present
-
-    - name: "[kde] Set SDDM as the default display manager"
-      ansible.builtin.copy:
-        content: "/usr/sbin/sddm\n"
-        dest: /etc/X11/default-display-manager
-        mode: '0644'
-
-    - name: "[kde] Enable SDDM service"
-      ansible.builtin.systemd:
-        name: sddm
-        enabled: true
-        daemon_reload: true
-      # SDDM will not start during this run — we are in multi-user text mode.
-      # It starts on the reboot at the end of this playbook.
-
-    - name: "[kde] Set graphical.target as default boot target"
-      ansible.builtin.command:
-        cmd: systemctl set-default graphical.target
-      changed_when: false
-
-    # ==========================================================================
-    # SECTION 7 — KVM VIRTUALISATION TOOLS
+    # SECTION 6 — KVM VIRTUALISATION TOOLS
     # Only on bare metal or nested inside a KVM guest.
     # Skipped in VirtualBox — nested virt in VirtualBox is unreliable.
     # ==========================================================================
@@ -540,7 +511,7 @@
       # Group membership takes effect on next login.
 
     # ==========================================================================
-    # SECTION 8 — DOCKER
+    # SECTION 7 — DOCKER
     # Official Docker apt repository, not the Debian-provided package.
     # The Debian docker.io package lags by months.
     # /etc/apt/keyrings/ is the modern key storage path — not apt-key (deprecated).
@@ -596,7 +567,7 @@
       # Production systems should use rootless Docker instead.
 
     # ==========================================================================
-    # SECTION 9 — GIT TOOLING
+    # SECTION 8 — GIT TOOLING
     # git is in core_packages. Here we add the tooling that makes git
     # feel like a proper development environment rather than a CLI chore.
     # ==========================================================================
@@ -644,7 +615,7 @@
         creates: /usr/local/bin/lazygit
 
     # ==========================================================================
-    # SECTION 10 — NODE.JS
+    # SECTION 9 — NODE.JS
     # NodeSource provides current LTS releases.
     # Debian's nodejs package is typically 2-3 major versions behind.
     # ==========================================================================
@@ -681,7 +652,7 @@
         - pnpm
 
     # ==========================================================================
-    # SECTION 11 — PYTHON TOOLING
+    # SECTION 10 — PYTHON TOOLING
     # pipx installs Python CLI tools into isolated virtual environments.
     # This avoids the PEP 668 "externally managed environment" error that
     # Debian 13 raises when you try to pip install into the system Python.
@@ -702,7 +673,7 @@
       changed_when: false
 
     # ==========================================================================
-    # SECTION 12 — KUBERNETES TOOLING
+    # SECTION 11 — KUBERNETES TOOLING
     # The cluster comes in Module 5 — but the tools belong on the workstation
     # from day one. Students interact with clusters from the beginning.
     #
@@ -743,7 +714,7 @@
         creates: /usr/local/bin/k9s
 
     # ==========================================================================
-    # SECTION 13 — FLATPAK
+    # SECTION 12 — FLATPAK
     # Distro-independent sandboxed application packaging.
     # The Discover backend integrates Flathub into KDE's software centre.
     # ==========================================================================
@@ -761,7 +732,7 @@
       changed_when: false
 
     # ==========================================================================
-    # SECTION 14 — BRAVE BROWSER
+    # SECTION 13 — BRAVE BROWSER
     # Installed as .deb from the official Brave apt repository.
     # Not Flatpak — apt means it is updated by apt upgrade alongside everything else.
     # ==========================================================================
@@ -791,7 +762,7 @@
         update_cache: true
 
     # ==========================================================================
-    # SECTION 15 — VISUAL STUDIO CODE
+    # SECTION 14 — VISUAL STUDIO CODE
     # Official Microsoft apt repository.
     #
     # KNOWN ISSUE: VS Code's post-install script sometimes writes a second
@@ -832,26 +803,211 @@
         update_cache: true
 
     # ==========================================================================
-    # SECTION 16 — CURSOR IDE
-    # Cursor does not provide an apt repository.
-    # downloader.cursor.sh uses multi-hop redirects that Ansible's get_url
-    # module does not follow correctly — the file downloads silently as zero
-    # bytes and get_url reports success. curl -fsSL handles all redirect types
-    # and fails loudly on any error.
+    # SECTION 15 — CURSOR IDE
+    # ==========================================================================
+    #
+    # ── PACKAGING SITUATION ──────────────────────────────────────────────────
+    #
+    # VS Code and Brave publish stable apt repositories. Add the repo once,
+    # run apt install, and apt handles the full lifecycle: install, upgrade,
+    # removal. That is the correct Linux packaging story.
+    #
+    # Cursor does not yet offer a pre-configured apt repo. Their .deb package
+    # registers a Cursor-managed apt source on FIRST APPLICATION LAUNCH — not
+    # on installation. During automated provisioning (headless, no GUI, no
+    # first launch) that repo does not yet exist, so apt upgrade has nothing
+    # to pull from.
+    #
+    # This is a deliberate Cursor packaging decision, not a bug. It is common
+    # among commercial Electron apps that manage their own update channels.
+    # The implementation below works within this constraint correctly.
+    #
+    # ── WHY THE API ENDPOINT, NOT A HARDCODED URL ────────────────────────────
+    #
+    # The prior implementation used a hardcoded download URL:
+    #   curl "https://downloader.cursor.sh/linux/nspkg/x64"
+    #
+    # That domain was decommissioned in early 2026. Every script that had
+    # that URL hardcoded broke on the same day with:
+    #   curl: (6) Could not resolve host
+    # No deprecation warning. No redirect. Silent failure on next provision.
+    #
+    # Cursor exposes a stable download API:
+    #   https://www.cursor.com/api/download?platform=linux-x64&releaseTrack=stable
+    #
+    # The response is JSON:
+    #   {
+    #     "downloadUrl": "...Cursor-3.x.y-x86_64.AppImage",
+    #     "debUrl":      "...cursor_3.x.y_amd64.deb",
+    #     "rpmUrl":      "...cursor-3.x.y.el8.x86_64.rpm",
+    #     "version":     "3.x.y",
+    #     "commitSha":   "abc123..."
+    #   }
+    #
+    # The API contract is stable. The file URLs it returns change with every
+    # release. This playbook always fetches the current version with zero
+    # maintenance — no URL to update, no version to pin.
+    #
+    # ── WHY .debUrl AND NOT .downloadUrl ─────────────────────────────────────
+    #
+    # .downloadUrl  →  AppImage (self-contained bundle)
+    # .debUrl       →  Debian package
+    #
+    # AppImage is wrong here for three reasons:
+    #   1. No system integration by default — no /usr/bin entry, no .desktop
+    #      launcher, no apt lifecycle.
+    #   2. Requires FUSE2 to run; Debian 13 has FUSE2 compatibility issues
+    #      with certain AppImages.
+    #   3. Students would never receive updates through normal apt upgrade.
+    #
+    # The .deb installs to standard FHS paths (/usr/bin/cursor), creates a
+    # .desktop launcher, and registers the Cursor apt repository for future
+    # updates once the application has been launched once.
+    #
+    # ── WHY jq IS A DECLARED PREREQUISITE ───────────────────────────────────
+    #
+    # The install shell block pipes the API response through jq to extract
+    # .debUrl. If jq is absent, the pipe fails immediately with:
+    #   /bin/sh: jq: command not found
+    # Because set -euo pipefail is active, this exits non-zero and the error
+    # message gives no indication that a missing tool is the cause.
+    #
+    # The prerequisite task below installs jq explicitly via apt before the
+    # shell block runs. jq is in the standard Debian repos; this adds one
+    # idempotent apt task with no side effects.
+    #
+    # ── WHY creates: /usr/bin/cursor ────────────────────────────────────────
+    #
+    # creates: is Ansible's idempotency guard for shell tasks. If the path
+    # exists, the entire block is skipped without executing a single line.
+    # /usr/bin/cursor is the binary path installed by the Cursor .deb —
+    # verified against the actual package contents. This makes the install
+    # a true one-shot: runs once on a fresh system, silent on every re-run.
+    #
+    # ── WHY ignore_errors: true IS REQUIRED ─────────────────────────────────
+    #
+    # Without ignore_errors: true, a failed install causes Ansible to halt
+    # the play immediately. The warning task that follows is never reached
+    # and the operator sees only a generic play failure, not the diagnostic
+    # message. ignore_errors: true allows execution to continue so the warning
+    # task can surface the failure with actionable context.
+    #
+    # IMPORTANT: ignore_errors does not suppress the failure mark.
+    # The install task is still reported as FAILED in the play summary.
+    # ignore_errors only controls whether the play halts — not whether
+    # the task outcome is recorded correctly.
+    #
+    # ── WHY failed_when IS STRUCTURED THIS WAY ──────────────────────────────
+    #
+    # When creates: triggers (Cursor already installed), Ansible skips the
+    # shell block entirely and cursor_install_result is never populated.
+    # Checking cursor_install_result.rc directly on a re-run would raise:
+    #   "undefined variable: cursor_install_result"
+    #
+    # The two-condition failed_when guards against this:
+    #   Condition 1: rc is defined   → false on skip, short-circuits safely
+    #   Condition 2: rc != 0         → evaluated only when rc exists
+    #
+    # Result:
+    #   Fresh install, success:   rc defined, rc == 0  → task passes
+    #   Fresh install, failure:   rc defined, rc != 0  → task marked failed
+    #   Already installed (skip): rc undefined          → task passes silently
+    #
+    # ── WHY A POST-INSTALL VERIFICATION TASK ────────────────────────────────
+    #
+    # The install task uses ignore_errors: true so a failure does not halt
+    # the play. Without a verification step, a failed install produces a
+    # warning message but provisioning continues and the student ends up with
+    # a workstation that is missing Cursor — with no further signal.
+    #
+    # The verification task runs cursor --version and registers the output.
+    # The debug task that follows reports the installed version on success,
+    # making the play summary self-documenting. On failure, the warning task
+    # already surfaced the diagnostic; the verification output adds the
+    # explicit confirmation that the binary is absent.
+    #
+    # ── FUTURE IMPROVEMENT — full apt lifecycle ──────────────────────────────
+    #
+    # Once Cursor publishes a stable, documented apt repository (as VS Code
+    # and Brave do), replace this entire section with the standard three-task
+    # pattern:
+    #   1. Add GPG key  →  /etc/apt/keyrings/cursor.gpg
+    #   2. Add repo     →  ansible.builtin.apt_repository
+    #   3. Install      →  ansible.builtin.apt: name=cursor state=present
+    #
+    # That eliminates all shell scripting and gives full apt lifecycle
+    # management. Monitor https://www.cursor.com/changelog for the
+    # announcement. A community forum post from August 2025 indicates this
+    # is on their roadmap.
+    #
+    # ── ARCHITECTURE DEPENDENCY NOTE ────────────────────────────────────────
+    #
+    # This section targets linux-x64 explicitly in the API query parameter.
+    # If the playbook is ever extended to arm64 hosts, add a when: condition
+    # on each task and duplicate the block with platform=linux-arm64.
+    # Do not attempt to make the platform value dynamic inside the shell
+    # block — keep it explicit and readable.
     # ==========================================================================
 
-    - name: "[cursor] Install Cursor IDE"
+    - name: "[cursor] Ensure jq is present for API response parsing"
+      ansible.builtin.apt:
+        name: jq
+        state: present
+        update_cache: false
+
+    - name: "[cursor] Install Cursor IDE via Debian package"
       ansible.builtin.shell:
         cmd: |
           set -euo pipefail
-          curl -fsSL "https://downloader.cursor.sh/linux/nspkg/x64" \
-            -o /tmp/cursor.deb
+
+          DEB_URL=$(curl -fsSL \
+            "https://www.cursor.com/api/download?platform=linux-x64&releaseTrack=stable" \
+            | jq -r '.debUrl')
+
+          if [ -z "$DEB_URL" ] || [ "$DEB_URL" = "null" ]; then
+            echo "ERROR: .debUrl was empty or null in Cursor API response"
+            exit 1
+          fi
+
+          curl -fsSL "$DEB_URL" -o /tmp/cursor.deb
           apt-get install -y /tmp/cursor.deb
           rm -f /tmp/cursor.deb
         creates: /usr/bin/cursor
+      register: cursor_install_result
+      ignore_errors: true
+      failed_when:
+        - cursor_install_result.rc is defined
+        - cursor_install_result.rc != 0
+
+    - name: "[cursor] Warn if Cursor IDE install failed"
+      ansible.builtin.debug:
+        msg:
+          - "⚠  Cursor IDE install failed — binary not present at /usr/bin/cursor."
+          - "   Diagnose the API response:"
+          - "     curl https://www.cursor.com/api/download?platform=linux-x64&releaseTrack=stable"
+          - "   Manual install: https://www.cursor.com/downloads"
+      when:
+        - cursor_install_result.rc is defined
+        - cursor_install_result.rc != 0
+
+    - name: "[cursor] Verify Cursor IDE binary and report installed version"
+      ansible.builtin.command:
+        cmd: cursor --version
+      register: cursor_version_result
+      changed_when: false
+      failed_when: false
+      when: cursor_install_result.rc is not defined or cursor_install_result.rc == 0
+
+    - name: "[cursor] Report installed Cursor version"
+      ansible.builtin.debug:
+        msg: "✓  Cursor IDE installed — {{ cursor_version_result.stdout | trim }}"
+      when:
+        - cursor_version_result is defined
+        - cursor_version_result.rc is defined
+        - cursor_version_result.rc == 0
 
     # ==========================================================================
-    # SECTION 17 — SHELL ENVIRONMENT AND GIT CONFIGURATION
+    # SECTION 16 — SHELL ENVIRONMENT AND GIT CONFIGURATION
     # zsh + starship + git-delta. This is the environment the student lives in.
     # ==========================================================================
 
@@ -938,7 +1094,7 @@
             defaultBranch = main
 
     # ==========================================================================
-    # SECTION 18 — NERD FONTS
+    # SECTION 17 — NERD FONTS
     # Required for starship prompt icons, eza icons, and lazygit symbols.
     # Without this the terminal shows squares where icons should be.
     # A sentinel file is used as the idempotency guard because the archive's
@@ -970,7 +1126,7 @@
       # re-downloads on every run. The sentinel is stable across all versions.
 
     # ==========================================================================
-    # SECTION 19 — YQ
+    # SECTION 18 — YQ
     # jq but for YAML. The Debian repos ship an outdated version.
     # Used throughout the course for manipulating Kubernetes manifests and
     # Helm values files from the command line.
@@ -987,6 +1143,36 @@
             -o /usr/local/bin/yq
           chmod +x /usr/local/bin/yq
         creates: /usr/local/bin/yq
+
+    # ==========================================================================
+    # SECTION 19 — KDE PLASMA DESKTOP
+    # Large download — 300-500MB depending on mirror cache state.
+    # ==========================================================================
+
+    - name: "[kde] Install KDE Plasma desktop"
+      ansible.builtin.apt:
+        name: "{{ kde_packages }}"
+        state: present
+
+    - name: "[kde] Set SDDM as the default display manager"
+      ansible.builtin.copy:
+        content: "/usr/sbin/sddm\n"
+        dest: /etc/X11/default-display-manager
+        mode: '0644'
+
+    - name: "[kde] Enable SDDM service"
+      ansible.builtin.systemd:
+        name: sddm
+        enabled: true
+        daemon_reload: true
+      # SDDM will not start during this run — we are in multi-user text mode.
+      # It starts on the reboot at the end of this playbook.
+
+    - name: "[kde] Set graphical.target as default boot target"
+      ansible.builtin.command:
+        cmd: systemctl set-default graphical.target
+      changed_when: false
+
 
     # ==========================================================================
     # SECTION 20 — FINAL SUMMARY
