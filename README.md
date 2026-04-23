@@ -5,12 +5,19 @@ wget -O bootstrap.sh https://raw.githubusercontent.com/Korplin/LinuxDevPlatformB
 
 After reboot, set JetBrainsMono Nerd Font in Konsole settings — otherwise the prompt icons render as squares.
 
-# Delete later
+# To Do
 
-sudo rm -f /etc/apt/keyrings/kubernetes.gpg
+## Split to Ansible roles
 
-sudo rm -f /etc/apt/sources.list.d/kubernetes.list
+## Add Windows apps complete virtualization stack
 
-sudo apt-get update
+By complete I mean that 2 ways of "virtualization"
+
+1. With layer of compatibility
+2. Complete virtualization with VM, but apps appearing as native with managable shortcuts
+
+This is something that have to be decided.
+
+
 
 
