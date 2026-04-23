@@ -590,27 +590,19 @@
     # but the tools should be available from day one.
     # ==========================================================================
 
-    - name: "[k8s] Add Kubernetes GPG key"
+    - name: "[k8s] Install kubectl — official binary (pkgs.k8s.io GPG key uses deprecated v3 packet, rejected by GnuPG 2.4+)"
       ansible.builtin.shell:
         cmd: |
-          curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key \
-            | gpg --dearmor -o /etc/apt/keyrings/kubernetes.gpg
-          chmod a+r /etc/apt/keyrings/kubernetes.gpg
-        creates: /etc/apt/keyrings/kubernetes.gpg
-
-    - name: "[k8s] Add Kubernetes apt repository"
-      ansible.builtin.apt_repository:
-        repo: >-
-          deb [signed-by=/etc/apt/keyrings/kubernetes.gpg]
-          https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /
-        filename: kubernetes
-        state: present
-
-    - name: "[k8s] Install kubectl"
-      ansible.builtin.apt:
-        name: kubectl
-        state: present
-        update_cache: true
+          set -euo pipefail
+          VERSION=$(curl -sL https://dl.k8s.io/release/stable.txt)
+          curl -sLO "https://dl.k8s.io/release/${VERSION}/bin/linux/amd64/kubectl"
+          install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+          rm -f kubectl
+        creates: /usr/local/bin/kubectl
+      # WHY NOT APT: The pkgs.k8s.io signing key uses an OpenPGP v3 signature
+      # packet. GnuPG 2.4+ (Debian 13) hard-rejects v3 packets since 2026-02-01.
+      # The direct binary from dl.k8s.io is the officially documented standalone
+      # install method and sidesteps the issue entirely.
 
     - name: "[k8s] Install Helm (Kubernetes package manager)"
       ansible.builtin.shell:
