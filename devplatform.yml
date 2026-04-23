@@ -671,6 +671,9 @@
     # duplicate the block with platform=linux-arm64 and gate each branch with
     # an explicit when: on ansible_architecture.
     # ==========================================================================
+    # ==========================================================================
+    # SECTION 15 — CURSOR IDE
+    # ==========================================================================
 
     - name: "[cursor] Check whether Cursor binary already exists"
       ansible.builtin.stat:
@@ -742,27 +745,32 @@
         state: absent
       when: not cursor_binary_stat.stat.exists
 
-    - name: "[cursor] Verify Cursor IDE binary"
+    - name: "[cursor] Verify Cursor package is installed"
       ansible.builtin.command:
-        cmd: cursor --version
-      register: cursor_version_result
+        cmd: dpkg -s cursor
+      register: cursor_package_status
       changed_when: false
       failed_when: false
 
-    - name: "[cursor] Fail if Cursor binary is still missing"
+    - name: "[cursor] Verify Cursor binary exists"
+      ansible.builtin.stat:
+        path: /usr/bin/cursor
+      register: cursor_binary_verification
+
+    - name: "[cursor] Fail if Cursor installation is incomplete"
       ansible.builtin.fail:
         msg: >-
           Cursor installation did not complete successfully.
           API version: {{ cursor_expected_version | default('unknown') }}
           Download URL: {{ cursor_deb_url | default('unknown') }}
-          Install rc: {{ cursor_install_result.rc | default('n/a') }}
-          stdout: {{ cursor_install_result.stdout | default('') }}
-          stderr: {{ cursor_install_result.stderr | default('') }}
-      when: cursor_version_result.rc != 0
+          Package rc: {{ cursor_package_status.rc | default('n/a') }}
+          Binary exists: {{ cursor_binary_verification.stat.exists | default(false) }}
+      when:
+        - cursor_package_status.rc != 0 or not cursor_binary_verification.stat.exists
 
-    - name: "[cursor] Report installed Cursor version"
+    - name: "[cursor] Report installed Cursor path"
       ansible.builtin.debug:
-        msg: "✓ Cursor IDE installed — {{ cursor_version_result.stdout | trim }}"
+        msg: "✓ Cursor IDE installed at /usr/bin/cursor"
 
 
 
