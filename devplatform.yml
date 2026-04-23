@@ -702,47 +702,23 @@
     # ==========================================================================
     # SECTION 16 — CURSOR IDE
     # Cursor does not provide an apt repository.
-    # We download the .deb directly from their download endpoint.
-    # The URL fetches the latest stable release automatically.
+    # downloader.cursor.sh uses redirects that Ansible's get_url module does not
+    # follow correctly. curl handles this natively.
+    # creates: guard makes this idempotent — skipped if already installed.
     # ==========================================================================
 
-    - name: "[cursor] Check if Cursor is already installed"
-      ansible.builtin.stat:
-        path: /usr/bin/cursor
-      register: cursor_stat
-
-    - name: "[cursor] Download Cursor IDE .deb"
-      ansible.builtin.get_url:
-        url: "https://downloader.cursor.sh/linux/nspkg/x64"
-        dest: /tmp/cursor.deb
-        mode: '0644'
-        timeout: 120
-      register: cursor_download
-      failed_when: false   # If Cursor changes their URL, we fail gracefully
-      when: not cursor_stat.stat.exists
-
-    - name: "[cursor] Install Cursor IDE from downloaded .deb"
-      ansible.builtin.apt:
-        deb: /tmp/cursor.deb
-        state: present
-      when:
-        - not cursor_stat.stat.exists
-        - cursor_download is not failed
-        - cursor_download.dest is defined
-
-    - name: "[cursor] Warn if Cursor download failed"
-      ansible.builtin.debug:
-        msg: |
-          ⚠ Cursor IDE download failed. The URL may have changed.
-          Install manually from: https://www.cursor.com/downloads
-      when:
-        - not cursor_stat.stat.exists
-        - cursor_download is failed
-
-    - name: "[cursor] Clean up downloaded .deb"
-      ansible.builtin.file:
-        path: /tmp/cursor.deb
-        state: absent
+    - name: "[cursor] Install Cursor IDE .deb"
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          curl -fsSL "https://downloader.cursor.sh/linux/nspkg/x64" \
+            -o /tmp/cursor.deb
+          apt-get install -y /tmp/cursor.deb
+          rm -f /tmp/cursor.deb
+        creates: /usr/bin/cursor
+      # WHY CURL NOT get_url: downloader.cursor.sh redirects through multiple
+      # hops. Ansible's get_url module does not follow all redirect types.
+      # curl -fsSL follows all redirects silently and fails loudly on errors.
 
     # ==========================================================================
     # SECTION 17 — SHELL ENVIRONMENT
